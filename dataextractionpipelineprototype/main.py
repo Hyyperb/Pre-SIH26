@@ -1,62 +1,37 @@
 """
-lidar_building_extractor.py
-============================
+lidar_extractor_simple.py
+==========================
+Simple, sequential point cloud -> building footprint / mesh extractor.
 
-Point cloud -> 3D building model extractor.
+Supports classified LiDAR with:
+    6  = Building
+    13 = Wire Guard   (exported for reference, not modeled)
+    14 = Wire Conductor (exported for reference, not modeled)
 
-Turns a classified aerial LiDAR point cloud (LAS/LAZ, ASPRS classification
-codes) into per-building footprints (Shapefile / GeoDataFrame), extruded
-meshes (PLY), and an optional ground DEM (GeoTIFF).
+No ground class (2) is required. Building height is computed from each
+cluster's own min/max Z (local ground-relative height is NOT available
+without ground points -- this gives point-cloud extent height instead).
 
-This is a cleaned-up, batch-ready rewrite of an exploratory notebook
-pipeline. Fixes applied relative to the original notebook:
+Meshes are built as proper watertight prisms: wall quads around the
+footprint ring + ear-clipped roof/floor caps (NOT alpha-shape-from-points,
+which only recovers the flattest surface and drops the vertical walls).
 
-  * The `height` used to extrude each building's mesh is now recomputed
-    per cluster. In the original loop, `height` was left over from the
-    single-building walkthrough (step 7) and silently reused for every
-    building in the batch loop (step 12) -- every mesh in the batch would
-    have had the SAME height.
-  * The raster/DEM section referenced `dem_array` and `transform` that
-    were never defined -- `dem_array` is now allocated from the point
-    extent and `transform` is built with `rasterio.transform.from_origin`.
-  * Degenerate / tiny clusters that make alphashape return `None`, an
-    empty geometry, or a MultiPolygon are now skipped instead of crashing
-    the batch loop.
-  * Ground level is (re)sampled from the k nearest ground points to each
-    building's footprint, not a stale `sample` object from a previous
-    iteration.
-  * Visualization (`o3d.visualization.draw_geometries`) is opt-in via
-    `.show()`, not fired automatically -- headless / server use won't try
-    to open a window.
+Also exports:
+    buildings.shp      -- footprint polygons + height/area attributes
+    building_N.ply      -- per-building 3D mesh (walls + roof + floor)
+    floorplans.svg      -- 2D floor plan of all footprints, with height labels
+    building_heights.svg -- bar chart of extracted building heights
 
-Requires: numpy, pandas, laspy, open3d, alphashape, geopandas, shapely,
-rasterio.
+Design:
+    - No classes, no method chaining. Just a sequence of numbered steps.
+    - Each step prints what it's doing and what it produced.
+    - Each step is wrapped so that if it fails, the script prints the
+      error and stops immediately -- it does NOT try to continue or
+      undo/re-run earlier steps. Anything already written to disk by
+      earlier steps stays on disk.
 
-Basic usage
------------
-    from lidar_building_extractor import BuildingExtractor, ExtractorConfig
-
-    cfg = ExtractorConfig(
-        building_class=6,
-        ground_class=2,
-        dbscan_eps=2.0,
-        dbscan_min_points=100,
-        crs="EPSG:26910",
-        output_dir="../RESULTS",
-    )
-
-    ex = BuildingExtractor(cfg)
-    ex.load("../DATA/neighborhood.laz").preprocess().segment()
-    buildings_gdf, mesh_paths = ex.extract_all()
-
-    # optional: also produce a ground DEM
-    ex.rasterize_ground(pixel_size=1.0)
-
-Command line
-------------
-    python lidar_building_extractor.py input.laz --outdir ../RESULTS \
-        --building-class 6 --ground-class 2 --eps 2.0 --min-points 100 \
-        --crs EPSG:26910 --dem
+Usage:
+    python lidar_extractor_simple.py input.las --outdir RESULTS
 """
 
 from __future__ import annotations
@@ -64,402 +39,459 @@ from __future__ import annotations
 import argparse
 import random
 import sys
-from dataclasses import dataclass
+import traceback
 from pathlib import Path
-from typing import List, Optional, Tuple
 
 import numpy as np
-
 import laspy
 import open3d as o3d
 import alphashape as ash
 import geopandas as gpd
-import rasterio
-from rasterio.transform import from_origin
+import matplotlib.pyplot as plt
+from matplotlib.patches import Polygon as MplPolygon
 
 
 # --------------------------------------------------------------------------- #
-# Configuration
+# Step runner -- prints a header, runs the step, stops the whole script on
+# any exception raised inside that step. Nothing after it runs.
 # --------------------------------------------------------------------------- #
-
-@dataclass
-class ExtractorConfig:
-    building_class: int = 6      # ASPRS: 6 = Building
-    ground_class: int = 2        # ASPRS: 2 = Ground
-    dbscan_eps: float = 2.0      # meters, DBSCAN neighborhood radius
-    dbscan_min_points: int = 100 # DBSCAN min samples per cluster
-    min_cluster_size: int = 100  # drop candidate buildings smaller than this
-    alpha_footprint: float = 0.5 # alphashape parameter for the 2D footprint
-    alpha_mesh: float = 20.0     # alphashape parameter for the extruded mesh
-    ground_knn: int = 50         # nearest ground points sampled per building
-    crs: str = "EPSG:26910"
-    output_dir: Path = Path("../RESULTS")
-    verbose: bool = True
+def run_step(step_num, total_steps, title, fn, *args, **kwargs):
+    print(f"\n[{step_num}/{total_steps}] {title}")
+    try:
+        result = fn(*args, **kwargs)
+        return result
+    except Exception as e:
+        print(f"    FAILED at step {step_num} ({title}): {e}")
+        traceback.print_exc()
+        print(f"\nStopping. Steps 1-{step_num - 1} already completed; "
+              f"any files they wrote are still on disk.")
+        sys.exit(1)
 
 
 # --------------------------------------------------------------------------- #
-# Core extractor
+# Step 1: Load
 # --------------------------------------------------------------------------- #
+def step_load(path):
+    las = laspy.read(str(path))
+    classes, counts = np.unique(las.classification, return_counts=True)
+    print(f"    Loaded {path}")
+    print(f"    Point count: {len(las.points)}")
+    for c, n in zip(classes, counts):
+        print(f"      class {c}: {n} points")
+    return las
 
-class BuildingExtractor:
-    """Point cloud -> building footprints, heights, and meshes."""
 
-    FOOTPRINT_COLUMNS = [
-        "id", "geometry", "height", "area", "perimeter",
-        "local_cx", "local_cy", "local_cz",
-        "transl_x", "transl_y", "transl_z", "pts_number",
-    ]
+# --------------------------------------------------------------------------- #
+# Step 2: Pull out building / wire points, recenter to a local frame
+# --------------------------------------------------------------------------- #
+def step_split_classes(las, building_class, wire_classes):
+    def xyz_for(mask):
+        return np.vstack((las.x[mask], las.y[mask], las.z[mask])).T
 
-    def __init__(self, config: Optional[ExtractorConfig] = None):
-        self.config = config or ExtractorConfig()
-        self.config.output_dir = Path(self.config.output_dir)
-        self.config.output_dir.mkdir(parents=True, exist_ok=True)
-        o3d.utility.set_verbosity_level(o3d.utility.VerbosityLevel.Error)
+    building_mask = las.classification == building_class
+    building_xyz = xyz_for(building_mask)
+    if len(building_xyz) == 0:
+        raise ValueError(
+            f"No points with classification={building_class} (building) found."
+        )
 
-        self.las: Optional[laspy.LasData] = None
-        self.crs_wkt: Optional[str] = None
+    wire_xyz = None
+    wire_mask = np.isin(las.classification, wire_classes)
+    if wire_mask.any():
+        wire_xyz = xyz_for(wire_mask)
 
-        self.building_pcd: Optional[o3d.geometry.PointCloud] = None
-        self.ground_pcd: Optional[o3d.geometry.PointCloud] = None
-        self.center = np.zeros(3)
+    center = building_xyz.mean(axis=0)
+    building_xyz_local = building_xyz - center
+    wire_xyz_local = (wire_xyz - center) if wire_xyz is not None else None
 
-        self.labels: Optional[np.ndarray] = None
-        self.buildings_gdf: Optional[gpd.GeoDataFrame] = None
+    print(f"    Building points (class {building_class}): {len(building_xyz)}")
+    if wire_xyz_local is not None:
+        print(f"    Wire points (classes {wire_classes}): {len(wire_xyz_local)}")
+    else:
+        print(f"    Wire points (classes {wire_classes}): none found, skipping wire export")
+    print(f"    Recenter offset (world -> local): {center}")
 
-    def _log(self, *args):
-        if self.config.verbose:
-            print(*args)
+    return {
+        "center": center,
+        "building_xyz": building_xyz_local,
+        "wire_xyz": wire_xyz_local,
+    }
 
-    # ------------------------------------------------------------------ #
-    # 1. Load
-    # ------------------------------------------------------------------ #
-    def load(self, path) -> "BuildingExtractor":
-        self.las = laspy.read(str(path))
+
+# --------------------------------------------------------------------------- #
+# Step 3: Export raw wire points for reference (if present) -- just a point
+# cloud, not modeled/clustered. Skipped cleanly if there are no wire points.
+# --------------------------------------------------------------------------- #
+def step_export_wires(data, outdir):
+    if data["wire_xyz"] is None:
+        print("    No wire points to export, skipping.")
+        return None
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(data["wire_xyz"] + data["center"])
+    out_path = outdir / "wires.ply"
+    o3d.io.write_triangle_mesh  # (not used, just avoiding unused-import lint)
+    o3d.io.write_point_cloud(str(out_path), pcd)
+    print(f"    Wrote {len(data['wire_xyz'])} wire points -> {out_path}")
+    return out_path
+
+
+# --------------------------------------------------------------------------- #
+# Step 4: DBSCAN cluster the building points into candidate buildings
+# --------------------------------------------------------------------------- #
+def step_cluster(data, eps, min_points):
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(data["building_xyz"])
+    labels = np.array(pcd.cluster_dbscan(eps=eps, min_points=min_points))
+    n_clusters = int(labels.max() + 1) if labels.size else 0
+    n_noise = int((labels < 0).sum())
+    print(f"    {n_clusters} candidate clusters, {n_noise} noise points")
+    if n_clusters == 0:
+        raise ValueError(
+            "No clusters found. Try a larger --eps or smaller --min-points."
+        )
+    return {"pcd": pcd, "labels": labels, "n_clusters": n_clusters}
+
+
+# --------------------------------------------------------------------------- #
+# Step 5: Per-cluster footprint + height. Height = max Z - min Z of that
+# cluster's own points (no ground class available to reference).
+# --------------------------------------------------------------------------- #
+def step_extract_footprints(cluster_data, center, alpha_footprint, min_cluster_size):
+    pcd = cluster_data["pcd"]
+    labels = cluster_data["labels"]
+    n_clusters = cluster_data["n_clusters"]
+    pts_all = np.asarray(pcd.points)
+
+    records = []
+    kept_segments = {}  # cluster_id -> points, for the mesh step
+
+    for cluster_id in range(n_clusters):
+        idx = np.where(labels == cluster_id)[0]
+        if len(idx) < min_cluster_size:
+            print(f"    cluster {cluster_id}: {len(idx)} pts < min size, skipped")
+            continue
+
+        seg_pts = pts_all[idx]
         try:
-            self.crs_wkt = self.las.vlrs[2].string
-        except Exception:
-            self.crs_wkt = None
+            fp = ash.alphashape(seg_pts[:, :2], alpha=alpha_footprint)
+        except Exception as e:
+            print(f"    cluster {cluster_id}: alphashape failed ({e}), skipped")
+            continue
 
-        self._log(f"Loaded {path}")
-        self._log("  Classifications present:", np.unique(self.las.classification))
-        self._log("  Point count:", len(self.las.points))
-        return self
+        if fp is None or fp.is_empty or fp.geom_type != "Polygon":
+            print(f"    cluster {cluster_id}: degenerate footprint, skipped")
+            continue
 
-    # ------------------------------------------------------------------ #
-    # 2. Preprocess: split building / ground, recenter to local frame
-    # ------------------------------------------------------------------ #
-    def _points_for_class(self, class_code: int) -> o3d.geometry.PointCloud:
-        mask = self.las.classification == class_code
-        xyz = np.vstack((self.las.x[mask], self.las.y[mask], self.las.z[mask])).T
-        pcd = o3d.geometry.PointCloud()
-        pcd.points = o3d.utility.Vector3dVector(xyz)
-        return pcd
+        z_min = seg_pts[:, 2].min()
+        z_max = seg_pts[:, 2].max()
+        height = z_max - z_min
 
-    def preprocess(self) -> "BuildingExtractor":
-        if self.las is None:
-            raise RuntimeError("Call .load() before .preprocess()")
-
-        self.building_pcd = self._points_for_class(self.config.building_class)
-        self.ground_pcd = self._points_for_class(self.config.ground_class)
-
-        if len(self.building_pcd.points) == 0:
-            raise ValueError(
-                f"No points with classification={self.config.building_class} found."
-            )
-        if len(self.ground_pcd.points) == 0:
-            raise ValueError(
-                f"No points with classification={self.config.ground_class} found."
-            )
-
-        # Recenter to a local frame -- keeps DBSCAN / alphashape numerically
-        # stable instead of operating on large UTM-scale coordinates.
-        self.center = self.building_pcd.get_center()
-        self.building_pcd.translate(-self.center)
-        self.ground_pcd.translate(-self.center)
-
-        nn = np.mean(self.building_pcd.compute_nearest_neighbor_distance())
-        self._log(f"  Average building point spacing: {nn:.3f} m")
-        return self
-
-    # ------------------------------------------------------------------ #
-    # 3. Segment candidate buildings with DBSCAN
-    # ------------------------------------------------------------------ #
-    def segment(self) -> "BuildingExtractor":
-        if self.building_pcd is None:
-            raise RuntimeError("Call .preprocess() before .segment()")
-
-        labels = np.array(
-            self.building_pcd.cluster_dbscan(
-                eps=self.config.dbscan_eps,
-                min_points=self.config.dbscan_min_points,
-            )
-        )
-        self.labels = labels
-        n_clusters = int(labels.max() + 1) if labels.size else 0
-        n_noise = int((labels < 0).sum())
-        self._log(f"  {n_clusters} candidate clusters, {n_noise} noise points")
-        return self
-
-    def get_segment(self, cluster_id: int) -> o3d.geometry.PointCloud:
-        idx = np.where(self.labels == cluster_id)[0]
-        return self.building_pcd.select_by_index(idx)
-
-    # ------------------------------------------------------------------ #
-    # 4. Per-building geometry
-    # ------------------------------------------------------------------ #
-    def _ground_level_near(self, xy: np.ndarray, z_hint: float, k: Optional[int] = None):
-        k = k or self.config.ground_knn
-        k = min(k, len(self.ground_pcd.points))
-        query = np.array([xy[0], xy[1], z_hint])
-        tree = o3d.geometry.KDTreeFlann(self.ground_pcd)
-        _, idx, _ = tree.search_knn_vector_3d(query, k)
-        sample = self.ground_pcd.select_by_index(idx)
-        return float(sample.get_center()[2])
-
-    def footprint(self, segment: o3d.geometry.PointCloud):
-        """2D alpha-shape footprint of a building segment (local frame)."""
-        pts_2d = np.asarray(segment.points)[:, :2]
-        return ash.alphashape(pts_2d, alpha=self.config.alpha_footprint)
-
-    def height(self, segment: o3d.geometry.PointCloud) -> Tuple[float, float]:
-        """Returns (height, ground_z) for a building segment."""
-        center = segment.get_center()
-        z_hint = segment.get_min_bound()[2]
-        ground_z = self._ground_level_near(center[:2], z_hint)
-        top_z = segment.get_max_bound()[2]
-        return top_z - ground_z, ground_z
-
-    def mesh_from_footprint(self, footprint_geom, ground_z: float, h: float,
-                             alpha: Optional[float] = None) -> o3d.geometry.TriangleMesh:
-        """Extrudes a 2D footprint into a 3D box-like mesh via alpha-shape."""
-        alpha = alpha if alpha is not None else self.config.alpha_mesh
-        coords = np.array(footprint_geom.exterior.coords)
-        base = np.hstack((coords, np.full((len(coords), 1), ground_z)))
-        top = np.hstack((coords, np.full((len(coords), 1), ground_z + h)))
-
-        pts = o3d.geometry.PointCloud()
-        pts.points = o3d.utility.Vector3dVector(np.vstack((base, top)))
-
-        mesh = o3d.geometry.TriangleMesh.create_from_point_cloud_alpha_shape(pts, alpha)
-        mesh.compute_vertex_normals()
-        return mesh
-
-    def _record(self, cluster_id, segment, footprint_geom, ground_z, h) -> dict:
-        return {
+        records.append({
             "id": cluster_id,
-            "geometry": footprint_geom,
-            "height": h,
-            "area": footprint_geom.area,
-            "perimeter": footprint_geom.length,
-            "local_cx": footprint_geom.centroid.x,
-            "local_cy": footprint_geom.centroid.y,
-            "local_cz": ground_z,
-            "transl_x": self.center[0],
-            "transl_y": self.center[1],
-            "transl_z": self.center[2],
-            "pts_number": len(segment.points),
-        }
+            "geometry": fp,
+            "height": height,
+            "area": fp.area,
+            "perimeter": fp.length,
+            "base_z_local": z_min,
+            "transl_x": center[0],
+            "transl_y": center[1],
+            "transl_z": center[2],
+            "pts_number": len(seg_pts),
+        })
+        kept_segments[cluster_id] = (seg_pts, z_min, height)
+        print(f"    cluster {cluster_id}: {len(idx)} pts, "
+              f"height={height:.2f} m, area={fp.area:.1f} m^2")
 
-    @staticmethod
-    def _random_color() -> List[float]:
-        return [random.random(), random.random(), random.random()]
-
-    # ------------------------------------------------------------------ #
-    # 5. Batch extraction over every DBSCAN cluster
-    # ------------------------------------------------------------------ #
-    def extract_all(self, export_meshes: bool = True, export_shapefile: bool = True,
-                     min_points: Optional[int] = None
-                     ) -> Tuple[gpd.GeoDataFrame, List[Path]]:
-        if self.labels is None:
-            self.segment()
-
-        min_points = self.config.min_cluster_size if min_points is None else min_points
-        n_clusters = int(self.labels.max() + 1) if self.labels.size else 0
-
-        records = []
-        mesh_paths: List[Path] = []
-
-        for cluster_id in range(n_clusters):
-            idx = np.where(self.labels == cluster_id)[0]
-            if len(idx) < min_points:
-                continue
-            segment = self.building_pcd.select_by_index(idx)
-
-            try:
-                fp = self.footprint(segment)
-            except Exception as e:
-                self._log(f"  cluster {cluster_id}: alphashape failed ({e}), skipped")
-                continue
-
-            if fp is None or fp.is_empty or fp.geom_type != "Polygon":
-                self._log(f"  cluster {cluster_id}: degenerate footprint, skipped")
-                continue
-
-            h, ground_z = self.height(segment)
-            records.append(self._record(cluster_id, segment, fp, ground_z, h))
-
-            if export_meshes:
-                try:
-                    mesh = self.mesh_from_footprint(fp, ground_z, h)
-                    mesh.translate(self.center)
-                    mesh.paint_uniform_color(self._random_color())
-                    out_path = self.config.output_dir / f"building_{cluster_id}.ply"
-                    o3d.io.write_triangle_mesh(
-                        str(out_path), mesh,
-                        write_ascii=False, compressed=True,
-                        write_vertex_normals=False, write_vertex_colors=True,
-                    )
-                    mesh_paths.append(out_path)
-                except Exception as e:
-                    self._log(f"  cluster {cluster_id}: mesh export failed ({e})")
-
-            self._log(f"  cluster {cluster_id}: {len(idx)} pts, "
-                       f"height={h:.2f} m, area={fp.area:.1f} m^2")
-
-        self.buildings_gdf = gpd.GeoDataFrame(
-            records, geometry="geometry", crs=self.config.crs
-        ) if records else gpd.GeoDataFrame(
-            columns=self.FOOTPRINT_COLUMNS, geometry="geometry", crs=self.config.crs
+    if not records:
+        raise ValueError(
+            "No valid building footprints extracted from any cluster."
         )
 
-        if export_shapefile and len(self.buildings_gdf):
-            out_shp = self.config.output_dir / "buildings.shp"
-            self.buildings_gdf.to_file(out_shp)
-            self._log(f"Wrote {len(self.buildings_gdf)} footprints -> {out_shp}")
-
-        self._log(f"Done: {len(records)}/{n_clusters} clusters kept as buildings")
-        return self.buildings_gdf, mesh_paths
-
-    # ------------------------------------------------------------------ #
-    # 6. Optional: ground DEM raster
-    # ------------------------------------------------------------------ #
-    def rasterize_ground(self, pixel_size: float = 1.0,
-                          out_path: Optional[Path] = None,
-                          class_code: Optional[int] = None) -> Path:
-        """Rasterizes classified ground points into a GeoTIFF DEM.
-
-        Uses WORLD (not recentered) coordinates so the output is directly
-        georeferenced in self.config.crs.
-        """
-        class_code = self.config.ground_class if class_code is None else class_code
-        mask = self.las.classification == class_code
-        x = np.asarray(self.las.x[mask])
-        y = np.asarray(self.las.y[mask])
-        z = np.asarray(self.las.z[mask])
-
-        if len(x) == 0:
-            raise ValueError(f"No points with classification={class_code} to rasterize")
-
-        min_x, max_x = x.min(), x.max()
-        min_y, max_y = y.min(), y.max()
-        n_cols = max(1, int(np.ceil((max_x - min_x) / pixel_size)))
-        n_rows = max(1, int(np.ceil((max_y - min_y) / pixel_size)))
-        self._log(f"  DEM grid: {n_rows} rows x {n_cols} cols @ {pixel_size} m/px")
-
-        dem = np.full((n_rows, n_cols), np.nan, dtype=np.float32)
-        col = ((x - min_x) / pixel_size).astype(int)
-        row = ((max_y - y) / pixel_size).astype(int)
-        valid = (row >= 0) & (row < n_rows) & (col >= 0) & (col < n_cols)
-
-        # Last-write-wins per pixel is fine for a quick DEM; for a smoother
-        # surface, aggregate (e.g. min/mean) per pixel instead.
-        dem[row[valid], col[valid]] = z[valid]
-
-        transform = from_origin(min_x, max_y, pixel_size, pixel_size)
-        out_path = Path(out_path) if out_path else self.config.output_dir / "ground_dem.tif"
-
-        with rasterio.open(
-            out_path, "w", driver="GTiff",
-            height=n_rows, width=n_cols, count=1,
-            dtype=np.float32, crs=self.config.crs,
-            transform=transform, nodata=np.nan,
-        ) as dst:
-            dst.write(dem, 1)
-
-        self._log(f"Wrote DEM -> {out_path}")
-        return out_path
-
-    # ------------------------------------------------------------------ #
-    # 7. Visualization (opt-in, requires a display)
-    # ------------------------------------------------------------------ #
-    def show(self, geometries):
-        o3d.visualization.draw_geometries(geometries)
-
-    def show_clusters(self):
-        """Colorizes each DBSCAN cluster and opens an Open3D viewer window."""
-        import matplotlib.pyplot as plt
-
-        if self.labels is None:
-            self.segment()
-        max_label = self.labels.max()
-        colors = plt.get_cmap("tab20")(self.labels / (max_label if max_label > 0 else 1))
-        colors[self.labels < 0] = 0
-        pcd = o3d.geometry.PointCloud(self.building_pcd)
-        pcd.colors = o3d.utility.Vector3dVector(colors[:, :3])
-        self.show([pcd])
+    return {"records": records, "segments": kept_segments}
 
 
 # --------------------------------------------------------------------------- #
-# CLI
+# Step 6: Write footprints to shapefile
 # --------------------------------------------------------------------------- #
-
-def build_arg_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(
-        description="Extract building footprints, heights and meshes from a "
-                    "classified LiDAR point cloud (LAS/LAZ)."
-    )
-    p.add_argument("input", type=Path, help="Path to input .las/.laz file")
-    p.add_argument("--outdir", type=Path, default=Path("../RESULTS"),
-                    help="Output directory (default: ../RESULTS)")
-    p.add_argument("--building-class", type=int, default=6,
-                    help="ASPRS classification code for buildings (default: 6)")
-    p.add_argument("--ground-class", type=int, default=2,
-                    help="ASPRS classification code for ground (default: 2)")
-    p.add_argument("--eps", type=float, default=2.0,
-                    help="DBSCAN eps in meters (default: 2.0)")
-    p.add_argument("--min-points", type=int, default=100,
-                    help="DBSCAN min_points / min cluster size (default: 100)")
-    p.add_argument("--alpha-footprint", type=float, default=0.5,
-                    help="Alpha shape parameter for 2D footprints (default: 0.5)")
-    p.add_argument("--alpha-mesh", type=float, default=20.0,
-                    help="Alpha shape parameter for extruded meshes (default: 20.0)")
-    p.add_argument("--crs", type=str, default="EPSG:26910",
-                    help="Output CRS (default: EPSG:26910)")
-    p.add_argument("--no-meshes", action="store_true", help="Skip PLY mesh export")
-    p.add_argument("--no-shapefile", action="store_true", help="Skip footprint shapefile export")
-    p.add_argument("--dem", action="store_true", help="Also export a ground DEM GeoTIFF")
-    p.add_argument("--dem-pixel-size", type=float, default=1.0, help="DEM pixel size in meters")
-    p.add_argument("--quiet", action="store_true", help="Suppress progress logging")
-    return p
+def step_write_shapefile(footprint_data, crs, outdir):
+    gdf = gpd.GeoDataFrame(footprint_data["records"], geometry="geometry", crs=crs)
+    out_path = outdir / "buildings.shp"
+    gdf.to_file(out_path)
+    print(f"    Wrote {len(gdf)} footprints -> {out_path}")
+    return gdf
 
 
+# --------------------------------------------------------------------------- #
+# Ear-clipping triangulation of a simple (possibly concave) 2D polygon ring.
+# Needed for the roof/floor caps -- alphashape footprints are often concave,
+# so a plain triangle fan (which only works for convex polygons) would
+# produce wrong/self-crossing triangles.
+# --------------------------------------------------------------------------- #
+def _polygon_area2(coords):
+    area = 0.0
+    n = len(coords)
+    for i in range(n):
+        x1, y1 = coords[i]
+        x2, y2 = coords[(i + 1) % n]
+        area += x1 * y2 - x2 * y1
+    return area
+
+
+def _is_convex_vertex(coords, a, b, c):
+    ax, ay = coords[a]
+    bx, by = coords[b]
+    cx, cy = coords[c]
+    cross = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
+    return cross > 1e-12
+
+
+def _point_in_triangle(p, a, b, c):
+    def sign(p1, p2, p3):
+        return (p1[0] - p3[0]) * (p2[1] - p3[1]) - (p2[0] - p3[0]) * (p1[1] - p3[1])
+    d1 = sign(p, a, b)
+    d2 = sign(p, b, c)
+    d3 = sign(p, c, a)
+    has_neg = (d1 < 0) or (d2 < 0) or (d3 < 0)
+    has_pos = (d1 > 0) or (d2 > 0) or (d3 > 0)
+    return not (has_neg and has_pos)
+
+
+def ear_clip_triangulate(coords):
+    """coords: list of (x, y), ring NOT closed (no repeated first/last point).
+    Returns a list of (i, j, k) index triples into `coords`."""
+    n = len(coords)
+    if n < 3:
+        return []
+    idx = list(range(n))
+    if _polygon_area2(coords) < 0:
+        idx.reverse()
+
+    triangles = []
+    guard = 0
+    while len(idx) > 3 and guard < 10000:
+        guard += 1
+        ear_found = False
+        for i in range(len(idx)):
+            a, b, c = idx[i - 1], idx[i], idx[(i + 1) % len(idx)]
+            if not _is_convex_vertex(coords, a, b, c):
+                continue
+            blocked = False
+            for p in idx:
+                if p in (a, b, c):
+                    continue
+                if _point_in_triangle(coords[p], coords[a], coords[b], coords[c]):
+                    blocked = True
+                    break
+            if blocked:
+                continue
+            triangles.append((a, b, c))
+            del idx[i]
+            ear_found = True
+            break
+        if not ear_found:
+            break  # degenerate ring; return whatever we've triangulated so far
+    if len(idx) == 3:
+        triangles.append(tuple(idx))
+    return triangles
+
+
+def extrude_polygon_mesh(footprint_geom, z_min, height):
+    """Builds a watertight prism mesh: walls (quads) + roof + floor caps.
+    This replaces alpha-shape-from-points, which only reliably recovers the
+    flattest/top surface and drops the vertical walls."""
+    coords = list(footprint_geom.exterior.coords)
+    if coords[0] == coords[-1]:
+        coords = coords[:-1]  # drop closing duplicate
+    n = len(coords)
+    if n < 3:
+        raise ValueError("footprint has fewer than 3 unique vertices")
+
+    base = [(x, y, z_min) for x, y in coords]
+    top = [(x, y, z_min + height) for x, y in coords]
+    vertices = base + top  # indices 0..n-1 = base ring, n..2n-1 = top ring
+
+    triangles = []
+    # Walls: one quad (2 triangles) per edge of the ring
+    for i in range(n):
+        j = (i + 1) % n
+        b_i, b_j, t_i, t_j = i, j, n + i, n + j
+        triangles.append((b_i, b_j, t_j))
+        triangles.append((b_i, t_j, t_i))
+
+    # Roof + floor caps via ear clipping (handles concave footprints)
+    roof_tris = ear_clip_triangulate(coords)
+    if not roof_tris:
+        raise ValueError("could not triangulate roof/floor cap (degenerate footprint)")
+    for (a, b, c) in roof_tris:
+        triangles.append((n + a, n + b, n + c))          # roof, upward normal
+        triangles.append((a, c, b))                      # floor, reversed winding
+
+    mesh = o3d.geometry.TriangleMesh()
+    mesh.vertices = o3d.utility.Vector3dVector(np.array(vertices))
+    mesh.triangles = o3d.utility.Vector3iVector(np.array(triangles))
+    mesh.remove_duplicated_vertices()
+    mesh.remove_degenerate_triangles()
+    return mesh
+
+
+# --------------------------------------------------------------------------- #
+# Step 7: Export extruded mesh per building (proper walls + roof + floor)
+# --------------------------------------------------------------------------- #
+def step_export_meshes(footprint_data, center, outdir):
+    mesh_paths = []
+    for rec in footprint_data["records"]:
+        cluster_id = rec["id"]
+        fp = rec["geometry"]
+        z_min, height = footprint_data["segments"][cluster_id][1:]
+
+        try:
+            mesh = extrude_polygon_mesh(fp, z_min, height)
+        except Exception as e:
+            print(f"    cluster {cluster_id}: mesh build failed ({e}), skipped")
+            continue
+
+        mesh.compute_vertex_normals()
+        mesh.translate(center)
+        mesh.paint_uniform_color([random.random(), random.random(), random.random()])
+
+        out_path = outdir / f"building_{cluster_id}.ply"
+        o3d.io.write_triangle_mesh(
+            str(out_path), mesh,
+            write_ascii=False, compressed=True,
+            write_vertex_normals=False, write_vertex_colors=True,
+        )
+        mesh_paths.append(out_path)
+        print(f"    cluster {cluster_id}: {len(mesh.triangles)} triangles "
+              f"(walls + roof + floor) -> {out_path}")
+
+    return mesh_paths
+
+
+# --------------------------------------------------------------------------- #
+# Step 8: Floor plan + height SVGs
+# --------------------------------------------------------------------------- #
+def step_export_floorplan_svg(gdf, outdir):
+    fig, ax = plt.subplots(figsize=(10, 10))
+    for _, row in gdf.iterrows():
+        coords = list(row.geometry.exterior.coords)
+        ax.add_patch(MplPolygon(coords, closed=True, fill=False,
+                                 edgecolor="black", linewidth=1.2))
+        c = row.geometry.centroid
+        ax.annotate(f"B{row['id']}\nh={row['height']:.1f} m\n"
+                     f"{row['area']:.0f} m²",
+                     (c.x, c.y), ha="center", va="center", fontsize=7)
+    ax.set_aspect("equal")
+    ax.autoscale_view()
+    ax.set_title("Building Floor Plans (local frame)")
+    ax.set_xlabel("X (m)")
+    ax.set_ylabel("Y (m)")
+    fig.tight_layout()
+
+    out_path = outdir / "floorplans.svg"
+    fig.savefig(out_path, format="svg")
+    plt.close(fig)
+    print(f"    Wrote floor plan -> {out_path}")
+    return out_path
+
+
+def step_export_height_chart_svg(gdf, outdir):
+    fig, ax = plt.subplots(figsize=(max(6, 0.6 * len(gdf)), 5))
+    labels = [f"B{i}" for i in gdf["id"]]
+    heights = gdf["height"].values
+    ax.bar(labels, heights, color="steelblue")
+    for i, h in enumerate(heights):
+        ax.text(i, h, f"{h:.1f} m", ha="center", va="bottom", fontsize=8)
+    ax.set_ylabel("Height (m)")
+    ax.set_title("Extracted Building Heights")
+    fig.tight_layout()
+
+    out_path = outdir / "building_heights.svg"
+    fig.savefig(out_path, format="svg")
+    plt.close(fig)
+    print(f"    Wrote height chart -> {out_path}")
+    return out_path
+
+
+# --------------------------------------------------------------------------- #
+# Main: run each step in order via run_step
+# --------------------------------------------------------------------------- #
 def main(argv=None):
-    args = build_arg_parser().parse_args(argv)
+    parser = argparse.ArgumentParser(
+        description="Simple building/wire extractor for LAS/LAZ (classes 6/13/14)."
+    )
+    parser.add_argument("input", type=Path)
+    parser.add_argument("--outdir", type=Path, default=Path("RESULTS"))
+    parser.add_argument("--building-class", type=int, default=6)
+    parser.add_argument("--wire-classes", type=int, nargs="*", default=[13, 14])
+    parser.add_argument("--eps", type=float, default=2.0)
+    parser.add_argument("--min-points", type=int, default=100)
+    parser.add_argument("--alpha-footprint", type=float, default=0.5)
+    parser.add_argument("--crs", type=str, default="EPSG:26910")
+    parser.add_argument("--no-meshes", action="store_true")
+    parser.add_argument("--no-svg", action="store_true")
+    args = parser.parse_args(argv)
 
-    cfg = ExtractorConfig(
-        building_class=args.building_class,
-        ground_class=args.ground_class,
-        dbscan_eps=args.eps,
-        dbscan_min_points=args.min_points,
-        min_cluster_size=args.min_points,
-        alpha_footprint=args.alpha_footprint,
-        alpha_mesh=args.alpha_mesh,
-        crs=args.crs,
-        output_dir=args.outdir,
-        verbose=not args.quiet,
+    args.outdir.mkdir(parents=True, exist_ok=True)
+    o3d.utility.set_verbosity_level(o3d.utility.VerbosityLevel.Error)
+
+    total_steps = 6
+    if not args.no_meshes:
+        total_steps += 1
+    if not args.no_svg:
+        total_steps += 2
+
+    las = run_step(1, total_steps, "Load LAS/LAZ file", step_load, args.input)
+
+    data = run_step(
+        2, total_steps, "Split classes (building / wire) and recenter",
+        step_split_classes, las, args.building_class, args.wire_classes,
     )
 
-    ex = BuildingExtractor(cfg)
-    ex.load(args.input).preprocess().segment()
-    gdf, meshes = ex.extract_all(
-        export_meshes=not args.no_meshes,
-        export_shapefile=not args.no_shapefile,
+    run_step(
+        3, total_steps, "Export wire points (reference only)",
+        step_export_wires, data, args.outdir,
     )
 
-    if args.dem:
-        ex.rasterize_ground(pixel_size=args.dem_pixel_size)
+    cluster_data = run_step(
+        4, total_steps, "Cluster building points (DBSCAN)",
+        step_cluster, data, args.eps, args.min_points,
+    )
 
-    print(f"\nExtracted {len(gdf)} buildings, {len(meshes)} meshes -> {cfg.output_dir}")
+    footprint_data = run_step(
+        5, total_steps, "Extract per-building footprint + height",
+        step_extract_footprints, cluster_data, data["center"],
+        args.alpha_footprint, args.min_points,
+    )
+
+    gdf = run_step(
+        6, total_steps, "Write footprints to shapefile",
+        step_write_shapefile, footprint_data, args.crs, args.outdir,
+    )
+
+    step_n = 6
+
+    if not args.no_meshes:
+        step_n += 1
+        mesh_paths = run_step(
+            step_n, total_steps, "Export extruded meshes (walls + roof + floor, .ply)",
+            step_export_meshes, footprint_data, data["center"], args.outdir,
+        )
+    else:
+        mesh_paths = []
+
+    if not args.no_svg:
+        step_n += 1
+        run_step(
+            step_n, total_steps, "Export floor plan SVG",
+            step_export_floorplan_svg, gdf, args.outdir,
+        )
+        step_n += 1
+        run_step(
+            step_n, total_steps, "Export height chart SVG",
+            step_export_height_chart_svg, gdf, args.outdir,
+        )
+
+    print(f"\nDone. {len(gdf)} buildings, {len(mesh_paths)} meshes -> {args.outdir}")
     return 0
 
 

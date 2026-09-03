@@ -1,0 +1,36 @@
+{
+  "url": "http://127.0.0.1:8080/buildings",
+  "viewports": {
+    "desktop": {
+      "width": 1280,
+      "height": 800,
+      "status": 200,
+      "title": "N3DC — National 3D Cadastre",
+      "hasCanvas": false,
+      "bodyTextLen": 2169,
+      "bodyTextHash": "b573d8cd5078900633eea81d5f0d1e5a90a1eb0267ef1585f2778488e1839212",
+      "bodyTextPrefix": "3D Dashboard Case Review LIDAR Buildings v-ULPIN Solar Envelope ",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/buildings-smoke.png"
+    },
+    "mobile": {
+      "width": 390,
+      "height": 844,
+      "status": 200,
+      "title": "N3DC — National 3D Cadastre",
+      "hasCanvas": false,
+      "bodyTextLen": 2000,
+      "bodyTextHash": "256154e2c5815cd28211d3776c842801169a4ec467a223c9e55ea41b005b4c52",
+      "bodyTextPrefix": "Buildings & Towers RO Each tower is a stack of 3D parcels, not a",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/buildings-smoke-mobile.png"
+    }
+  },
+  "brandWarnings": [],
+  "authWarnings": [],
+  "verdictFile": "/workspace/screenshots/buildings-smoke.json"
+}

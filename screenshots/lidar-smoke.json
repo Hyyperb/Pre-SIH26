@@ -1,0 +1,36 @@
+{
+  "url": "http://127.0.0.1:8080/lidar",
+  "viewports": {
+    "desktop": {
+      "width": 1280,
+      "height": 800,
+      "status": 200,
+      "title": "N3DC — National 3D Cadastre",
+      "hasCanvas": false,
+      "bodyTextLen": 3250,
+      "bodyTextHash": "46f9af5b573c52638438a989f2d50a758b79dcf68b097fee98c2dc4857764692",
+      "bodyTextPrefix": "3D Dashboard Case Review LIDAR Buildings v-ULPIN Solar Envelope ",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/lidar-smoke.png"
+    },
+    "mobile": {
+      "width": 390,
+      "height": 844,
+      "status": 200,
+      "title": "N3DC — National 3D Cadastre",
+      "hasCanvas": false,
+      "bodyTextLen": 3083,
+      "bodyTextHash": "1977e2731c1c6c3c23299b4901c66405c991a938e207347a779d14c232fdad6a",
+      "bodyTextPrefix": "LIDAR Ingest & Vertical Mapping 1904 1856 4273 77 · Green Height",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/lidar-smoke-mobile.png"
+    }
+  },
+  "brandWarnings": [],
+  "authWarnings": [],
+  "verdictFile": "/workspace/screenshots/lidar-smoke.json"
+}

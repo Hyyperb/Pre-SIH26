@@ -1,0 +1,36 @@
+{
+  "url": "http://127.0.0.1:8080/ulpin",
+  "viewports": {
+    "desktop": {
+      "width": 1280,
+      "height": 800,
+      "status": 200,
+      "title": "N3DC — National 3D Cadastre",
+      "hasCanvas": false,
+      "bodyTextLen": 2307,
+      "bodyTextHash": "17332759938d02d7cef9d4b491968a884f09b26aaa2bc41f3a4a284048b95607",
+      "bodyTextPrefix": "3D Dashboard Case Review LIDAR Buildings v-ULPIN Solar Envelope ",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/app-builder-preview.png"
+    },
+    "mobile": {
+      "width": 390,
+      "height": 844,
+      "status": 200,
+      "title": "N3DC — National 3D Cadastre",
+      "hasCanvas": false,
+      "bodyTextLen": 2123,
+      "bodyTextHash": "84207a02ca00ef87d730b58fc71210a9ae7e7e21a0c8a0241dac5e16ca3ac779",
+      "bodyTextPrefix": "Vertical ULPIN 1904 1856 4273 77 · Green Heights Tower 1904 1855",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/app-builder-preview-mobile.png"
+    }
+  },
+  "brandWarnings": [],
+  "authWarnings": [],
+  "verdictFile": "/workspace/screenshots/app-builder-preview.json"
+}

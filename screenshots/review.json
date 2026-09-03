@@ -1,0 +1,36 @@
+{
+  "url": "http://127.0.0.1:8080/review",
+  "viewports": {
+    "desktop": {
+      "width": 1280,
+      "height": 800,
+      "status": 200,
+      "title": "N3DC — National 3D Cadastre",
+      "hasCanvas": false,
+      "bodyTextLen": 996,
+      "bodyTextHash": "2c1a0da5bf16017d334ac04ad2836c775a8cfd257ed5529f68f5a8f1c54ec300",
+      "bodyTextPrefix": "3D Dashboard Case Review Buildings v-ULPIN Solar Envelope Fire A",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/review.png"
+    },
+    "mobile": {
+      "width": 390,
+      "height": 844,
+      "status": 200,
+      "title": "N3DC — National 3D Cadastre",
+      "hasCanvas": false,
+      "bodyTextLen": 510,
+      "bodyTextHash": "38aa0f4a52c709076c372410781dabaf643047e4434c986d2b567953dcb23074",
+      "bodyTextPrefix": "REGISTRAR COMPLIANCE CONTROL PANEL Green Heights Tower Skyline T",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/review-mobile.png"
+    }
+  },
+  "brandWarnings": [],
+  "authWarnings": [],
+  "verdictFile": "/workspace/screenshots/review.json"
+}

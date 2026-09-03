@@ -1,0 +1,36 @@
+{
+  "url": "http://127.0.0.1:8080/solar",
+  "viewports": {
+    "desktop": {
+      "width": 1280,
+      "height": 800,
+      "status": 200,
+      "title": "N3DC — National 3D Cadastre",
+      "hasCanvas": false,
+      "bodyTextLen": 1054,
+      "bodyTextHash": "7b7bbebc73244456fb606f31b84028a92e77ac0e082f12509e2f5f0775b400d2",
+      "bodyTextPrefix": "3D Dashboard Case Review Buildings v-ULPIN Solar Envelope Fire A",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/solar.png"
+    },
+    "mobile": {
+      "width": 390,
+      "height": 844,
+      "status": 200,
+      "title": "N3DC — National 3D Cadastre",
+      "hasCanvas": false,
+      "bodyTextLen": 889,
+      "bodyTextHash": "b610c142fd13c4b4ee195b90fe2292d017544032b48eced506be94f97ca4857b",
+      "bodyTextPrefix": "Shadow & Sunlight Right Green Heights Tower Skyline Tower Green ",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/solar-mobile.png"
+    }
+  },
+  "brandWarnings": [],
+  "authWarnings": [],
+  "verdictFile": "/workspace/screenshots/solar.json"
+}

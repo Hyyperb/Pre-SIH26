@@ -1,0 +1,36 @@
+{
+  "url": "http://127.0.0.1:8080/emergency",
+  "viewports": {
+    "desktop": {
+      "width": 1280,
+      "height": 800,
+      "status": 200,
+      "title": "N3DC — National 3D Cadastre",
+      "hasCanvas": false,
+      "bodyTextLen": 1356,
+      "bodyTextHash": "0f662be6f87ef214ef9fd711fb281899cc1dc72ffa527e775b3131983d122bde",
+      "bodyTextPrefix": "3D Dashboard Case Review Buildings v-ULPIN Solar Envelope Fire A",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/emergency.png"
+    },
+    "mobile": {
+      "width": 390,
+      "height": 844,
+      "status": 200,
+      "title": "N3DC — National 3D Cadastre",
+      "hasCanvas": false,
+      "bodyTextLen": 1188,
+      "bodyTextHash": "05ddd3b2a8db48546a7c1b8a35a747ea5a7a7d4239139bfc2395f239088e8ae8",
+      "bodyTextPrefix": "Fire-Tender Access Green Heights Tower Skyline Tower Green View ",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/emergency-mobile.png"
+    }
+  },
+  "brandWarnings": [],
+  "authWarnings": [],
+  "verdictFile": "/workspace/screenshots/emergency.json"
+}

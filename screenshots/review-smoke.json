@@ -1,0 +1,36 @@
+{
+  "url": "http://127.0.0.1:8080/review",
+  "viewports": {
+    "desktop": {
+      "width": 1280,
+      "height": 800,
+      "status": 200,
+      "title": "N3DC — National 3D Cadastre",
+      "hasCanvas": false,
+      "bodyTextLen": 1635,
+      "bodyTextHash": "1acaa4c822380edab37946ec06a236d4fa502e551aaaca5302c2e31d177be823",
+      "bodyTextPrefix": "3D Dashboard Case Review LIDAR Buildings v-ULPIN Solar Envelope ",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/review-smoke.png"
+    },
+    "mobile": {
+      "width": 390,
+      "height": 844,
+      "status": 200,
+      "title": "N3DC — National 3D Cadastre",
+      "hasCanvas": false,
+      "bodyTextLen": 1043,
+      "bodyTextHash": "5a778fd4ccc2f9e867c351234fddb50425c4c50dd9741b6cdc41404e685f326d",
+      "bodyTextPrefix": "REGISTRAR COMPLIANCE CONTROL PANEL 1904 1856 4273 77 · Green Hei",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/review-smoke-mobile.png"
+    }
+  },
+  "brandWarnings": [],
+  "authWarnings": [],
+  "verdictFile": "/workspace/screenshots/review-smoke.json"
+}

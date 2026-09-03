@@ -1,0 +1,36 @@
+{
+  "url": "http://127.0.0.1:8080/audit",
+  "viewports": {
+    "desktop": {
+      "width": 1280,
+      "height": 800,
+      "status": 200,
+      "title": "N3DC — National 3D Cadastre",
+      "hasCanvas": false,
+      "bodyTextLen": 2498,
+      "bodyTextHash": "fe6e7e3d4e0a5e415b9f86ad5f1810340fa843d6886e09d34f33cd6d0f560774",
+      "bodyTextPrefix": "3D Dashboard Case Review Buildings v-ULPIN Solar Envelope Fire A",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/audit.png"
+    },
+    "mobile": {
+      "width": 390,
+      "height": 844,
+      "status": 200,
+      "title": "N3DC — National 3D Cadastre",
+      "hasCanvas": false,
+      "bodyTextLen": 2324,
+      "bodyTextHash": "68e158d491d9b4d0b280fa501e79cc25b0b479eed3b1d692d9833ce85cdff2d8",
+      "bodyTextPrefix": "Immutable Title Ledger Green Heights Tower Skyline Tower Green V",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/audit-mobile.png"
+    }
+  },
+  "brandWarnings": [],
+  "authWarnings": [],
+  "verdictFile": "/workspace/screenshots/audit.json"
+}
